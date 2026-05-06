@@ -1,0 +1,21 @@
+# VoteKV configuration for Mistral-7B-Instruct-v0.2
+
+model_name: "mistralai/Mistral-7B-Instruct-v0.2"
+kv_method: "gqa_vote_rescue"  # Options: full_cache, snapkv, gqa_mean, gqa_max, gqa_vote, gqa_rank_vote, gqa_vote_rescue
+max_context_len: 8192
+max_new_tokens: 64
+observation_window: 32
+kv_budget: null  # If set, use this fixed budget; otherwise use kv_budget_ratio
+kv_budget_ratio: 0.08
+vote_topk: 128
+group_budget: null
+rescue_budget: 4
+sink_tokens: 4
+recent_tokens: 32
+dtype: "bfloat16"  # Options: float16, bfloat16, float32
+device: "cuda"
+use_flash_attention: false
+output_attentions: true
+batch_size: 1
+seed: 42
+cache_layout: "layer_shared"  # Options: layer_shared, per_kv_head_padded (future)
