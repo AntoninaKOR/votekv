@@ -1,7 +1,7 @@
 # VoteKV configuration for Mistral-7B-Instruct-v0.2
 
 model_name: "mistralai/Mistral-7B-Instruct-v0.2"
-kv_method: "gqa_vote_rescue"  # Options: full_cache, snapkv, gqa_mean, gqa_max, gqa_vote, gqa_rank_vote, gqa_vote_rescue
+kv_method: "gqa_vote_rescue"  # Options: full_cache, gqa_mean, gqa_max, gqa_vote, gqa_rank_vote, gqa_vote_rescue
 max_context_len: 8192
 max_new_tokens: 64
 observation_window: 32
