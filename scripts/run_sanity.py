@@ -88,6 +88,10 @@ def run_sanity_test(
         config.model_name, device=device, dtype=dtype
     )
     
+    if method == config.kv_method or not hasattr(run_sanity_test, '_logged_model_info'):
+        log_model_info(model, tokenizer, asdict(config))
+        run_sanity_test._logged_model_info = True
+    
     # Get GQA info
     gqa_info = get_gqa_info(model)
     logger.info(f"GQA Info: {gqa_info}")
@@ -250,8 +254,6 @@ def main():
         vote_topk=args.vote_topk,
         rescue_budget=args.rescue_budget,
     )
-    
-    log_model_info(None, None, asdict(config))
     
     results = []
     
