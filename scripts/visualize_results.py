@@ -202,10 +202,17 @@ def plot_latency_comparison(df: pd.DataFrame, output_dir: Path):
 def plot_disagreement_by_layer(disagreement_data: Dict, output_dir: Path):
     """Plot disagreement scores across layers"""
     per_layer_data = disagreement_data['per_layer_per_kv_head']
-    
-    # Organize by layer
+
+    # Accept BOTH formats:
+    #   * flat   = [ {layer, kv_head, disagreement, avg_jaccard}, ... ]   (new, canonical)
+    #   * nested = [ [ {...}, {...} ],  [...],  ... ]                     (old JSONs)
+    if per_layer_data and isinstance(per_layer_data[0], list):
+        flat = [d for sub in per_layer_data for d in sub]
+    else:
+        flat = per_layer_data
+
     layer_disagreements = {}
-    for item in per_layer_data:
+    for item in flat:
         layer = item['layer']
         if layer not in layer_disagreements:
             layer_disagreements[layer] = []
@@ -371,61 +378,69 @@ def plot_summary_comparison(df: pd.DataFrame, output_dir: Path):
     print(f"Saved: {output_file}")
 
 
+def _safe(label: str, fn, *args, **kwargs):
+    """Run a plotting function and report failures without aborting the rest."""
+    print(f"\n{label} ...")
+    try:
+        fn(*args, **kwargs)
+    except FileNotFoundError as e:
+        print(f"  SKIPPED ({label}): {e}")
+    except Exception as e:
+        print(f"  FAILED  ({label}): {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize VoteKV evaluation results")
     parser.add_argument("--needle_results", type=str, help="Path to needle JSONL file")
     parser.add_argument("--disagreement_results", type=str, help="Path to disagreement JSON file")
     parser.add_argument("--vote_histogram", type=str, help="Path to vote histogram JSON file")
     parser.add_argument("--output_dir", type=str, default="outputs/plots", help="Output directory for plots")
-    parser.add_argument("--plots", nargs="+", 
+    parser.add_argument("--plots", nargs="+",
                        choices=['all', 'heatmap', 'tradeoff', 'latency', 'disagreement', 'histogram', 'summary'],
                        default=['all'], help="Which plots to generate")
     
     args = parser.parse_args()
     
-    # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     plot_all = 'all' in args.plots
     
     # Needle evaluation plots
-    if args.needle_results:
+    if args.needle_results and Path(args.needle_results).exists():
         df = load_needle_results(Path(args.needle_results))
         print(f"\nLoaded {len(df)} needle evaluation results")
         
         if plot_all or 'heatmap' in args.plots:
-            print("\nGenerating needle accuracy heatmaps...")
-            plot_needle_heatmap(df, output_dir)
-        
+            _safe("needle accuracy heatmaps", plot_needle_heatmap, df, output_dir)
         if plot_all or 'tradeoff' in args.plots:
-            print("\nGenerating compression-accuracy tradeoff plots...")
-            plot_compression_accuracy_tradeoff(df, output_dir)
-        
+            _safe("compression-accuracy tradeoff", plot_compression_accuracy_tradeoff, df, output_dir)
         if plot_all or 'latency' in args.plots:
-            print("\nGenerating latency comparison...")
-            plot_latency_comparison(df, output_dir)
-        
+            _safe("latency comparison", plot_latency_comparison, df, output_dir)
         if plot_all or 'summary' in args.plots:
-            print("\nGenerating summary comparison...")
-            plot_summary_comparison(df, output_dir)
+            _safe("summary comparison", plot_summary_comparison, df, output_dir)
+    elif args.needle_results:
+        print(f"\nSKIPPED needle plots: {args.needle_results} not found")
     
     # Disagreement analysis plots
-    if args.disagreement_results:
+    if args.disagreement_results and Path(args.disagreement_results).exists():
         disagreement_data = load_disagreement_results(Path(args.disagreement_results))
         print(f"\nLoaded disagreement analysis results")
-        
         if plot_all or 'disagreement' in args.plots:
-            print("\nGenerating disagreement by layer plot...")
-            plot_disagreement_by_layer(disagreement_data, output_dir)
+            _safe("disagreement by layer", plot_disagreement_by_layer, disagreement_data, output_dir)
+    elif args.disagreement_results:
+        print(f"\nSKIPPED disagreement plot: {args.disagreement_results} not found")
     
     # Vote histogram plots
-    if args.vote_histogram:
+    if args.vote_histogram and Path(args.vote_histogram).exists():
         if plot_all or 'histogram' in args.plots:
-            print("\nGenerating vote histogram...")
-            plot_vote_histogram(Path(args.vote_histogram), output_dir)
-    
-    print(f"\n✓ All plots saved to: {output_dir}")
+            _safe("vote histogram", plot_vote_histogram, Path(args.vote_histogram), output_dir)
+    elif args.vote_histogram:
+        print(f"\nSKIPPED vote histogram plot: {args.vote_histogram} not found")
+
+    print(f"\n[done] plots saved to: {output_dir}")
 
 
 if __name__ == "__main__":

@@ -153,6 +153,10 @@ def create_figure_2_disagreement(disagreement_path: Path, output_dir: Path):
     ax1 = fig.add_subplot(gs[0, 0])
     
     per_layer_data = data['per_layer_per_kv_head']
+    # Accept BOTH flat and nested list formats (see visualize_results.py).
+    if per_layer_data and isinstance(per_layer_data[0], list):
+        per_layer_data = [d for sub in per_layer_data for d in sub]
+
     layer_disagreements = {}
     for item in per_layer_data:
         layer = item['layer']

@@ -93,8 +93,11 @@ def compute_gqa_disagreement(
             
             all_disagreements.append(disagreement)
             all_jaccards.append(avg_jaccard)
-        
-        results["per_layer_per_kv_head"].append(layer_results)
+
+        # Flat list of {layer, kv_head, ...} dicts: visualizers iterate over
+        # this directly. Using .append(layer_results) here would produce a
+        # nested list-of-lists and break plot_disagreement_by_layer.
+        results["per_layer_per_kv_head"].extend(layer_results)
     
     results["average_disagreement"] = float(np.mean(all_disagreements))
     results["average_jaccard"] = float(np.mean(all_jaccards))
