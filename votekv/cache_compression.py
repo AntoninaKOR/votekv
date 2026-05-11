@@ -33,37 +33,54 @@ def convert_kv_head_mask_to_layer_indices(
     if mask.device != scores.device:
         mask = mask.to(scores.device)
 
+    exceeded_unions: List[int] = []  # union sizes for layers that overshot
+
     for layer_idx in range(num_layers):
         layer_mask = mask[layer_idx]  # [num_kv_heads, seq_len]
 
-        # Take union: token selected if ANY KV head selected it.
+        # Per-KV-head selection counts on this layer (how many tokens each head
+        # kept before union/compression). Useful for diagnosing whether some
+        # heads are systematically picking different tokens.
+        per_head_counts = layer_mask.sum(dim=-1).tolist()
+
         union_mask = layer_mask.any(dim=0)  # [seq_len]
         selected = torch.where(union_mask)[0]
+        union_size = int(selected.numel())
 
-        if len(selected) <= max_budget:
-            selected_sorted = torch.sort(selected).values
-            selected_indices_per_layer.append(selected_sorted)
+        if union_size <= max_budget:
+            selected_indices_per_layer.append(torch.sort(selected).values)
+            logger.debug(
+                f"Layer {layer_idx:>2}: per-head={per_head_counts} "
+                f"union={union_size} <= budget={max_budget} (no trim)"
+            )
         else:
             # Exceeds budget: rank by importance (how many KV heads agreed),
             # tie-break with average score across query heads.
             importance = layer_mask.float().sum(dim=0)
-            avg_score = scores[layer_idx].mean(dim=0)  # [seq_len]
+            avg_score = scores[layer_idx].mean(dim=0)
 
             composite = importance * 1e6 + avg_score
             selected_scores = composite[selected]
-            
-            # Take top max_budget
+
             _, top_indices = torch.topk(selected_scores, max_budget, largest=True)
             selected_final = selected[top_indices]
-            selected_sorted = torch.sort(selected_final).values
-            
-            selected_indices_per_layer.append(selected_sorted)
-            
-            logger.warning(
-                f"Layer {layer_idx}: union ({len(selected)}) exceeds budget ({max_budget}), "
-                f"trimmed to {len(selected_sorted)}"
+            selected_indices_per_layer.append(torch.sort(selected_final).values)
+
+            exceeded_unions.append(union_size)
+            logger.debug(
+                f"Layer {layer_idx:>2}: per-head={per_head_counts} "
+                f"union={union_size} > budget={max_budget} -> trimmed to {max_budget}"
             )
-    
+
+    if exceeded_unions:
+        n = len(exceeded_unions)
+        logger.info(
+            f"Layer-shared union > budget in {n}/{num_layers} layers "
+            f"(union sizes: min={min(exceeded_unions)} "
+            f"avg={sum(exceeded_unions) // n} "
+            f"max={max(exceeded_unions)}); all trimmed to {max_budget}"
+        )
+
     return selected_indices_per_layer
 
 

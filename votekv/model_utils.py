@@ -41,8 +41,10 @@ def load_model_and_tokenizer(
     )
     
     model.eval()
-    
-    logger.info(f"Model loaded successfully")
-    logger.info(f"Model config: {model.config}")
-    
+
+    logger.info(
+        f"Model loaded: {model_name} ({sum(p.numel() for p in model.parameters()) / 1e9:.2f}B params)"
+    )
+    logger.debug(f"Model config: {model.config}")
+
     return model, tokenizer

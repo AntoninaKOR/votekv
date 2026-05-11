@@ -3,20 +3,51 @@
 import logging
 import sys
 import time
+import warnings
 import torch
 from typing import Dict, Any
 from contextlib import contextmanager
 
 
-def setup_logging(level=logging.INFO):
-    """Setup basic logging configuration"""
+
+_NOISY_LOGGERS = (
+    "httpx",
+    "httpcore",
+    "huggingface_hub",
+    "huggingface_hub.utils._http",
+    "transformers",
+    "transformers.modeling_utils",
+    "transformers.tokenization_utils_base",
+    "urllib3",
+    "filelock",
+)
+
+
+def setup_logging(level=logging.INFO, quiet_external: bool = True):
+    """Configure root logging.
+
+    Args:
+        level: log level for the application loggers
+        quiet_external: if True, mute httpx / hf_hub / transformers INFO spam
+    """
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
+        format="%(asctime)s | %(levelname)-5s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
     )
+
+    if quiet_external:
+        for name in _NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        # Silence the transformers FutureWarning about torch_dtype etc.
+        warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+        try:
+            from transformers.utils import logging as hf_logging
+            hf_logging.set_verbosity_error()
+        except Exception:
+            pass
 
 
 @contextmanager

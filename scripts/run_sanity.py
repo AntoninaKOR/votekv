@@ -1,6 +1,7 @@
-"""Sanity check script for VoteKV
+"""Sanity check script for VoteKV.
 
 Tests basic functionality with a simple prompt containing a passkey.
+Loads the model once and benchmarks every selection method against it.
 """
 
 import sys
@@ -23,97 +24,64 @@ from votekv.cache_compression import (
     compress_past_key_values_layer_shared,
     get_cache_info,
 )
-from votekv.generation import generate_with_compressed_cache, simple_greedy_generate
-from votekv.logging_utils import setup_logging, log_memory_stats, reset_memory_stats, log_model_info
+from votekv.generation import generate_with_compressed_cache
+from votekv.logging_utils import setup_logging, reset_memory_stats
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Banner helpers — keep stdout readable across many methods.
+# ---------------------------------------------------------------------------
+
+def _banner(title: str, char: str = "=", width: int = 80) -> None:
+    bar = char * width
+    logger.info(bar)
+    logger.info(f"  {title}")
+    logger.info(bar)
+
+
 def create_sanity_prompt(target_len: int = 1024, passkey: str = "493827") -> str:
-    """Create a synthetic prompt with a hidden passkey
-    
-    Args:
-        target_len: Target token length (approximate)
-        passkey: Secret passkey to hide in text
-        
-    Returns:
-        Prompt string
-    """
+    """Synthetic prompt with a hidden passkey inserted twice (early + midway)."""
     filler = (
         "The quick brown fox jumps over the lazy dog. "
         "This is a sample text used for testing purposes. "
         "We repeat this text multiple times to create a long context. "
     )
-    
-    # Calculate repetitions needed (rough estimate: ~20 tokens per repetition)
     tokens_per_rep = 20
     needed_reps = target_len // tokens_per_rep
-    
-    # Insert passkey early in the text
+
     prompt = f"There is a secret passkey hidden in the text: {passkey}. "
     prompt += "Remember this passkey. " * 3
     prompt += filler * (needed_reps // 2)
     prompt += f"\n\nThe passkey mentioned earlier was: {passkey}.\n\n"
     prompt += filler * (needed_reps // 2)
     prompt += f"\n\nQuestion: What is the secret passkey mentioned in this text?\nAnswer:"
-    
     return prompt
 
 
 @torch.no_grad()
 def run_sanity_test(
+    model,
+    tokenizer,
+    gqa_info: dict,
     config: VoteKVConfig,
     method: str,
-    target_len: int = 1024,
-):
-    """Run sanity test for a specific method
-    
-    Args:
-        config: VoteKV configuration
-        method: KV selection method
-        target_len: Target prompt length in tokens
-        
-    Returns:
-        Dictionary with results
-    """
-    logger.info(f"\n{'='*80}")
-    logger.info(f"Running sanity test: {method}")
-    logger.info(f"{'='*80}")
-    
-    # Load model
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    passkey: str,
+) -> dict:
+    """Run a single method on the already-tokenised prompt."""
+    _banner(f"METHOD: {method}")
+
     device = config.device
-    dtype = config.get_dtype()
-    
-    model, tokenizer = load_model_and_tokenizer(
-        config.model_name, device=device, dtype=dtype
-    )
-    
-    if method == config.kv_method or not hasattr(run_sanity_test, '_logged_model_info'):
-        log_model_info(model, tokenizer, asdict(config))
-        run_sanity_test._logged_model_info = True
-    
-    # Get GQA info
-    gqa_info = get_gqa_info(model)
-    logger.info(f"GQA Info: {gqa_info}")
-    
-    # Create prompt
-    passkey = "493827"
-    prompt = create_sanity_prompt(target_len=target_len, passkey=passkey)
-    
-    # Tokenize
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    input_ids = inputs["input_ids"]
-    attention_mask = inputs["attention_mask"]
-    
     prompt_len = input_ids.shape[1]
-    logger.info(f"Prompt length: {prompt_len} tokens")
-    
+
     reset_memory_stats(device)
     start_time = time.perf_counter()
-    
-    # Prefill phase
+
+    # ----- Prefill -----
     prefill_start = time.perf_counter()
-    
     outputs = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -121,64 +89,53 @@ def run_sanity_test(
         output_attentions=(method != "full_cache"),
         return_dict=True,
     )
-    
     past_key_values = outputs.past_key_values
     logits = outputs.logits
-    
     prefill_time = time.perf_counter() - prefill_start
-    
-    # Cache info before compression
-    cache_info_before = get_cache_info(past_key_values)
-    logger.info(f"Cache before compression: {cache_info_before}")
-    
-    # Compression phase
+
+    # ----- Compression -----
     if method == "full_cache":
         compressed_cache = past_key_values
         retained_count = prompt_len
         compression_time = 0.0
+        budget = prompt_len
     else:
         compression_start = time.perf_counter()
-        
-        # Compute scores
+
         attentions = outputs.attentions
         scores = compute_snapkv_scores_from_attentions(
             attentions, config.observation_window
         )
-        
-        # Select tokens
         mask = select_tokens(scores, method, config, gqa_info)
-        
-        # Convert to layer indices
         budget = config.resolve_budget(prompt_len)
         selected_indices = convert_kv_head_mask_to_layer_indices(
             mask, scores, budget
         )
-        
-        # Compress cache
         compressed_cache = compress_past_key_values_layer_shared(
             past_key_values, selected_indices
         )
-        
         retained_count = selected_indices[0].shape[0]
         compression_time = time.perf_counter() - compression_start
-        
-        logger.info(f"Selected tokens (layer 0): {selected_indices[0].tolist()[:20]}...")
-        
-        # Clean up
+
+        logger.info(
+            f"Selected (layer 0, first 10): "
+            f"{selected_indices[0][:10].tolist()}"
+        )
+
         del attentions, scores, mask
         torch.cuda.empty_cache()
-    
-    # Cache info after compression
-    cache_info_after = get_cache_info(compressed_cache)
-    logger.info(f"Cache after compression: {cache_info_after}")
-    
-    # Generation phase
+
+    compression_ratio = prompt_len / retained_count if retained_count > 0 else 1.0
+    logger.info(
+        f"Cache: {prompt_len} -> {retained_count} tokens "
+        f"(budget={budget}, ratio={compression_ratio:.2f}x)"
+    )
+
+    # ----- Generation -----
     decode_start = time.perf_counter()
-    
-    # Get first token from prefill logits
     next_token = logits[:, -1:, :].argmax(dim=-1)
-    
-    generated_ids, gen_stats = generate_with_compressed_cache(
+
+    generated_ids, _ = generate_with_compressed_cache(
         model=model,
         tokenizer=tokenizer,
         input_ids=next_token,
@@ -187,70 +144,84 @@ def run_sanity_test(
         max_new_tokens=config.max_new_tokens,
         original_seq_len=prompt_len,
     )
-    
     decode_time = time.perf_counter() - decode_start
     total_time = time.perf_counter() - start_time
-    
-    # Decode output. generate_with_compressed_cache returns only new tokens,
-    # so its length is exactly num_generated_tokens.
+
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
     num_generated_tokens = generated_ids.shape[1]
     tokens_per_sec = num_generated_tokens / decode_time if decode_time > 0 else 0.0
-    
-    logger.info(f"\nGenerated text: {generated_text}")
-    logger.info(f"Correct passkey: {passkey}")
-    logger.info(f"Passkey in output: {passkey in generated_text}")
-    
-    # Memory stats
-    memory_stats = {
-        "peak_memory_gb": torch.cuda.max_memory_allocated() / (1024 ** 3)
-    }
-    log_memory_stats(device)
-    
-    # Timing
-    logger.info(f"\nTiming:")
-    logger.info(f"  Prefill: {prefill_time:.4f}s")
-    logger.info(f"  Compression: {compression_time:.4f}s")
-    logger.info(f"  Decode: {decode_time:.4f}s ({num_generated_tokens} tokens, {tokens_per_sec:.2f} tok/s)")
-    logger.info(f"  Total: {total_time:.4f}s")
-    
-    # Compression ratio
-    compression_ratio = prompt_len / retained_count if retained_count > 0 else 1.0
-    logger.info(f"\nCompression ratio: {compression_ratio:.2f}x ({prompt_len} -> {retained_count})")
-    
+    contains_passkey = passkey in generated_text
+
+    peak_gb = (
+        torch.cuda.max_memory_allocated() / (1024 ** 3)
+        if torch.cuda.is_available() and device != "cpu"
+        else 0.0
+    )
+
+    logger.info(f"Generated: {generated_text.strip()[:200]}")
+    logger.info(
+        f"Passkey {passkey}: {'FOUND' if contains_passkey else 'NOT FOUND'}"
+    )
+    logger.info(
+        f"Timing: prefill={prefill_time:.2f}s | "
+        f"compress={compression_time:.2f}s | "
+        f"decode={decode_time:.2f}s ({num_generated_tokens} tok, {tokens_per_sec:.1f} tok/s) | "
+        f"total={total_time:.2f}s"
+    )
+    logger.info(f"GPU peak: {peak_gb:.2f} GB")
+
+    # Free compressed cache so the next method starts clean.
+    del past_key_values, compressed_cache, outputs, logits, generated_ids
+    torch.cuda.empty_cache()
+
     return {
         "method": method,
         "prompt_len": prompt_len,
         "retained_tokens": retained_count,
         "compression_ratio": compression_ratio,
-        "generated_text": generated_text,
-        "contains_passkey": passkey in generated_text,
+        "contains_passkey": contains_passkey,
         "num_generated_tokens": num_generated_tokens,
         "tokens_per_sec": tokens_per_sec,
         "prefill_time": prefill_time,
         "compression_time": compression_time,
         "decode_time": decode_time,
         "total_time": total_time,
-        "peak_memory_gb": memory_stats["peak_memory_gb"],
+        "peak_memory_gb": peak_gb,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description="VoteKV Sanity Test")
     parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.2")
-    parser.add_argument("--methods", nargs="+", default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"])
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"],
+    )
     parser.add_argument("--target_len", type=int, default=1024, help="Target prompt length")
     parser.add_argument("--kv_budget_ratio", type=float, default=0.08)
     parser.add_argument("--observation_window", type=int, default=32)
     parser.add_argument("--vote_topk", type=int, default=128)
     parser.add_argument("--rescue_budget", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda")
-    
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable DEBUG logs everywhere (per-layer compression, model config, internals).",
+    )
+    parser.add_argument(
+        "--show-layers", action="store_true",
+        help="Enable per-layer compression DEBUG only (one line per layer per method), "
+             "without other DEBUG noise.",
+    )
+
     args = parser.parse_args()
-    
-    setup_logging(level=logging.INFO)
-    
-    # Create config
+
+    setup_logging(level=logging.DEBUG if args.verbose else logging.INFO)
+    if args.show_layers and not args.verbose:
+        # Promote only the cache-compression logger to DEBUG so the user sees
+        # the per-layer union/budget messages without the rest of the chatter.
+        logging.getLogger("votekv.cache_compression").setLevel(logging.DEBUG)
+
     config = VoteKVConfig(
         model_name=args.model_name,
         device=args.device,
@@ -259,28 +230,73 @@ def main():
         vote_topk=args.vote_topk,
         rescue_budget=args.rescue_budget,
     )
-    
+
+    # ----- Load model and tokenizer once -----
+    _banner("SETUP")
+    model, tokenizer = load_model_and_tokenizer(
+        config.model_name, device=config.device, dtype=config.get_dtype()
+    )
+    gqa_info = get_gqa_info(model)
+
+    passkey = "493827"
+    prompt = create_sanity_prompt(target_len=args.target_len, passkey=passkey)
+    inputs = tokenizer(prompt, return_tensors="pt").to(config.device)
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    prompt_len = input_ids.shape[1]
+    budget = config.resolve_budget(prompt_len)
+
+    logger.info(
+        f"Model: {config.model_name} | "
+        f"layers={model.config.num_hidden_layers} "
+        f"Q-heads={gqa_info['num_attention_heads']} "
+        f"KV-heads={gqa_info['num_key_value_heads']} "
+        f"group_size={gqa_info['group_size']}"
+    )
+    logger.info(
+        f"Prompt: {prompt_len} tokens | "
+        f"budget={budget} ({config.kv_budget_ratio*100:.1f}%) | "
+        f"sink={config.sink_tokens} recent={config.recent_tokens} "
+        f"obs_window={config.observation_window} vote_topk={config.vote_topk} "
+        f"rescue_budget={config.rescue_budget}"
+    )
+    logger.info(f"Passkey to retrieve: {passkey}")
+    logger.info(f"Methods to run: {', '.join(args.methods)}")
+
+    # ----- Run methods -----
     results = []
-    
     for method in args.methods:
         try:
-            result = run_sanity_test(config, method, args.target_len)
+            result = run_sanity_test(
+                model=model,
+                tokenizer=tokenizer,
+                gqa_info=gqa_info,
+                config=config,
+                method=method,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                passkey=passkey,
+            )
             results.append(result)
         except Exception as e:
             logger.error(f"Error running {method}: {e}", exc_info=True)
-    
-    # Summary
-    logger.info("\n" + "="*80)
-    logger.info("SUMMARY")
-    logger.info("="*80)
-    logger.info(f"{'Method':<25} {'Retained':<10} {'Ratio':<10} {'Passkey':<10} {'Time (s)':<10}")
-    logger.info("-"*80)
-    
+
+    # ----- Final summary table -----
+    _banner("SUMMARY")
+    header = (
+        f"{'Method':<18} {'Retained':>9} {'Ratio':>7} {'Passkey':>8} "
+        f"{'Decode (s)':>11} {'Tok/s':>7} {'Peak GB':>8}"
+    )
+    logger.info(header)
+    logger.info("-" * len(header))
     for r in results:
         logger.info(
-            f"{r['method']:<25} {r['retained_tokens']:<10} "
-            f"{r['compression_ratio']:<10.2f} {str(r['contains_passkey']):<10} "
-            f"{r['total_time']:<10.2f}"
+            f"{r['method']:<18} {r['retained_tokens']:>9} "
+            f"{r['compression_ratio']:>6.2f}x "
+            f"{('YES' if r['contains_passkey'] else 'NO'):>8} "
+            f"{r['decode_time']:>11.2f} "
+            f"{r['tokens_per_sec']:>7.1f} "
+            f"{r['peak_memory_gb']:>8.2f}"
         )
 
 
