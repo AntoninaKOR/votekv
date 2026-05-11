@@ -75,22 +75,28 @@ def group_scores_by_gqa(
     num_attention_heads: int,
     num_key_value_heads: int
 ) -> torch.Tensor:
-    """Reshape scores from per-query-head to per-KV-head grouped format
-    
+    """Reshape scores from per-query-head to per-KV-head grouped format.
+
+    Assumes the HF convention that consecutive query heads share a KV head:
+    Q[0..g-1] -> KV[0], Q[g..2g-1] -> KV[1], ... This holds for Mistral, Llama,
+    and Qwen GQA models. If a future model uses an interleaved layout, this
+    function must be updated.
+
     Args:
         scores: [num_layers, num_attention_heads, seq_len]
         num_attention_heads: Total query heads
         num_key_value_heads: Total KV heads
-        
+
     Returns:
         group_scores: [num_layers, num_kv_heads, group_size, seq_len]
     """
     group_size = num_attention_heads // num_key_value_heads
     num_layers, n_heads, seq_len = scores.shape
-    
+
     assert n_heads == num_attention_heads, (
         f"Expected {num_attention_heads} heads, got {n_heads}"
     )
-    
-    # Reshape: [layers, kv_heads, group_size, seq_len]
-    return scores.view(num_layers, num_key_value_heads, group_size, seq_len)
+
+    # Use reshape (not view) to tolerate non-contiguous score tensors that may
+    # arrive from torch.stack + squeeze in the scoring path.
+    return scores.reshape(num_layers, num_key_value_heads, group_size, seq_len)

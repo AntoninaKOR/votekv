@@ -31,16 +31,19 @@ def compute_snapkv_scores_from_attentions(
     
     for layer_idx in range(num_layers):
         attn = attentions[layer_idx]  # [batch, num_heads, seq_len, seq_len]
-        
-        # Observation window: last `observation_window` tokens as queries
+
+        # Observation window: last `observation_window` tokens as queries.
         obs_start = max(0, seq_len - observation_window)
         obs_end = seq_len
-        
-        # Sum attention from observation window to all tokens
+
+        # Sum attention from observation window to all tokens.
         # attn[:, :, obs_start:obs_end, :] -> [batch, num_heads, obs_window, seq_len]
-        # Sum over observation window dimension -> [batch, num_heads, seq_len]
-        scores = attn[:, :, obs_start:obs_end, :].sum(dim=2)
-        
+        # Cast to float32 before reduction: attention weights are typically
+        # bfloat16 (eager attention with bf16 weights), and accumulating
+        # `observation_window` values in bf16 loses enough precision to make
+        # topk unstable for closely-ranked tokens.
+        scores = attn[:, :, obs_start:obs_end, :].float().sum(dim=2)
+
         all_scores.append(scores)
     
     # Stack all layers: [num_layers, batch, num_heads, seq_len]

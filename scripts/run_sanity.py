@@ -191,8 +191,11 @@ def run_sanity_test(
     decode_time = time.perf_counter() - decode_start
     total_time = time.perf_counter() - start_time
     
-    # Decode output
+    # Decode output. generate_with_compressed_cache returns only new tokens,
+    # so its length is exactly num_generated_tokens.
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+    num_generated_tokens = generated_ids.shape[1]
+    tokens_per_sec = num_generated_tokens / decode_time if decode_time > 0 else 0.0
     
     logger.info(f"\nGenerated text: {generated_text}")
     logger.info(f"Correct passkey: {passkey}")
@@ -208,7 +211,7 @@ def run_sanity_test(
     logger.info(f"\nTiming:")
     logger.info(f"  Prefill: {prefill_time:.4f}s")
     logger.info(f"  Compression: {compression_time:.4f}s")
-    logger.info(f"  Decode: {decode_time:.4f}s")
+    logger.info(f"  Decode: {decode_time:.4f}s ({num_generated_tokens} tokens, {tokens_per_sec:.2f} tok/s)")
     logger.info(f"  Total: {total_time:.4f}s")
     
     # Compression ratio
@@ -222,6 +225,8 @@ def run_sanity_test(
         "compression_ratio": compression_ratio,
         "generated_text": generated_text,
         "contains_passkey": passkey in generated_text,
+        "num_generated_tokens": num_generated_tokens,
+        "tokens_per_sec": tokens_per_sec,
         "prefill_time": prefill_time,
         "compression_time": compression_time,
         "decode_time": decode_time,
@@ -243,7 +248,7 @@ def main():
     
     args = parser.parse_args()
     
-    setup_logging()
+    setup_logging(level=logging.INFO)
     
     # Create config
     config = VoteKVConfig(

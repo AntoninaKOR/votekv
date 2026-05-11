@@ -124,8 +124,6 @@ python scripts/create_paper_figures.py \
   --output_dir outputs/paper_figures
 ```
 
-See [VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md) for detailed documentation on all available plots and customization options.
-
 ## Configuration
 
 Key parameters (see `configs/mistral_7b_votekv.yaml`):
@@ -136,15 +134,6 @@ Key parameters (see `configs/mistral_7b_votekv.yaml`):
 - `rescue_budget`: Rescue tokens per query head (default: 4)
 - `sink_tokens`: Initial tokens to always keep (default: 4)
 - `recent_tokens`: Recent tokens to always keep (default: 32)
-
-## Research Claims
-
-This implementation allows verification of:
-
-1. **Query heads disagree**: Within a GQA group, query heads select different important tokens
-2. **Mean/max are suboptimal**: Simple aggregation loses head-specific signals
-3. **Voting balances consensus**: Vote mechanism captures group-level importance
-4. **Rescue preserves specialization**: Head-specific rescue tokens maintain retrieval quality
 
 ## Key Baselines
 
@@ -172,20 +161,6 @@ The code is modular and can be extended to:
 ## TODO
 
 - [ ] True per-KV-head ragged/padded cache support
-- [ ] Flash Attention integration
 - [ ] Batch processing
 - [ ] LongBench full evaluation
-- [ ] Additional models (Llama, Qwen)
-- [ ] Attention-free importance estimation (for efficiency)
 
-## Citation
-
-Related papers:
-- SnapKV: LLM Knows What You are Looking for Before Generation
-- GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints
-- Ada-KV: Optimizing KV Cache Eviction by Adaptive Budget Allocation
-- R-KV: Redundancy-aware KV Cache Compression for Training-Free Reasoning Models Acceleration
-
-## License
-
-Research code for academic use.

@@ -1,7 +1,7 @@
 """KV-cache compression utilities"""
 
 import torch
-from typing import Tuple, List
+from typing import Tuple, List, Union
 import logging
 
 logger = logging.getLogger(__name__)
@@ -66,43 +66,65 @@ def convert_kv_head_mask_to_layer_indices(
 
 
 def compress_past_key_values_layer_shared(
-    past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor], ...],
+    past_key_values,
     selected_indices_per_layer: List[torch.Tensor],
-) -> Tuple[Tuple[torch.Tensor, torch.Tensor], ...]:
-    """Compress past_key_values using layer-shared selected indices
+):
+    """Compress cache for transformers 5.8.0+ DynamicCache
     
     Args:
-        past_key_values: Tuple of (key, value) per layer
-            key/value shape: [batch, num_kv_heads, seq_len, head_dim]
+        past_key_values: DynamicCache with .layers[i].keys/.values
         selected_indices_per_layer: List of sorted indices per layer
         
     Returns:
-        Compressed past_key_values with same structure
+        Compressed DynamicCache
     """
-    compressed = []
+    from transformers.cache_utils import DynamicCache, DynamicLayer
     
-    for layer_idx, (k, v) in enumerate(past_key_values):
+    # transformers 5.8.0: DynamicCache.layers[i].keys/values
+    layers = past_key_values.layers
+    compressed_layers = []
+    
+    for layer_idx, layer in enumerate(layers):
+        k = layer.keys
+        v = layer.values
         idx = selected_indices_per_layer[layer_idx].to(k.device)
-        
-        # k/v shape: [batch, num_kv_heads, seq_len, head_dim]
-        # Index along seq_len dimension (dim=2)
+
+        # KV-cache index_select requires monotonically increasing indices to keep
+        # RoPE / position ordering consistent with the original prompt positions.
+        if idx.numel() > 1:
+            assert torch.all(idx[1:] >= idx[:-1]), (
+                f"Layer {layer_idx}: selected indices must be sorted ascending"
+            )
+
         k_new = k.index_select(dim=2, index=idx)
         v_new = v.index_select(dim=2, index=idx)
         
-        compressed.append((k_new, v_new))
+        # Create new DynamicLayer
+        new_layer = DynamicLayer()
+        new_layer.keys = k_new
+        new_layer.values = v_new
+        new_layer.dtype = layer.dtype
+        new_layer.device = layer.device
+        new_layer.is_initialized = True
+        
+        compressed_layers.append(new_layer)
     
     logger.info(
-        f"Compressed cache: layer 0 from {k.shape[2]} to {k_new.shape[2]} tokens"
+        f"Compressed cache: layer 0 from {layers[0].keys.shape[2]} to {compressed_layers[0].keys.shape[2]} tokens"
     )
     
-    return tuple(compressed)
+    # Create new DynamicCache
+    compressed_cache = DynamicCache()
+    compressed_cache.layers = compressed_layers
+    
+    return compressed_cache
 
 
-def get_cache_info(past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor], ...]) -> dict:
-    """Get information about cache structure
+def get_cache_info(past_key_values) -> dict:
+    """Get cache info for transformers 5.8.0+ DynamicCache
     
     Args:
-        past_key_values: Tuple of (key, value) per layer
+        past_key_values: DynamicCache with .layers[i].keys/.values
         
     Returns:
         Dictionary with cache statistics
@@ -110,14 +132,19 @@ def get_cache_info(past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor], ...
     if not past_key_values:
         return {}
     
-    num_layers = len(past_key_values)
-    k, v = past_key_values[0]
-    batch_size, num_kv_heads, seq_len, head_dim = k.shape
+    # transformers 5.8.0: DynamicCache.layers[i].keys/values
+    layers = past_key_values.layers
+    num_layers = len(layers)
+    
+    k = layers[0].keys
+    v = layers[0].values
     
     total_elements = sum(
-        k.numel() + v.numel() for k, v in past_key_values
+        layer.keys.numel() + layer.values.numel() for layer in layers
     )
     
+    batch_size, num_kv_heads, seq_len, head_dim = k.shape
+
     return {
         "num_layers": num_layers,
         "batch_size": batch_size,

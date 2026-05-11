@@ -126,7 +126,7 @@ def benchmark_method(
         "compression_sec": compression_time,
         "decode_sec": decode_time,
         "total_sec": total_time,
-        "tokens_per_sec": len(generated_ids[0]) / decode_time if decode_time > 0 else 0,
+        "tokens_per_sec": generated_ids.shape[1] / decode_time if decode_time > 0 else 0,
         "peak_memory_gb": torch.cuda.max_memory_allocated() / (1024 ** 3),
         "output_text": output_text[:200],  # Truncate for logging
     }

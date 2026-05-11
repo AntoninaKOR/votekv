@@ -279,46 +279,54 @@ def select_gqa_vote_rescue(
                 selected_vote = []
             
             selected_set = always_keep_set | set(selected_vote)
-            
-            # Rescue phase: each head adds rescue_budget tokens
+
+            # Rescue phase: each head adds rescue_budget tokens. We remember the
+            # head-specific score that *justified* adding each rescue token, so
+            # that budget trimming can rank rescues by the same signal that
+            # selected them (not by an unrelated cross-head aggregate).
             rescue_tokens = []
+            rescue_scores_dict: Dict[int, float] = {}
+
             for head_in_group in range(group_size):
                 head_scores = scores_group[head_in_group]
-                
-                # Exclude already selected
+
                 rescue_candidates_mask = torch.ones(seq_len, dtype=torch.bool, device=scores.device)
                 rescue_candidates_mask[list(selected_set)] = False
-                rescue_candidates_mask[rescue_tokens] = False
+                if rescue_tokens:
+                    rescue_candidates_mask[rescue_tokens] = False
                 rescue_candidate_indices = torch.where(rescue_candidates_mask)[0]
-                
+
                 if len(rescue_candidate_indices) > 0 and config.rescue_budget > 0:
                     rescue_candidate_scores = head_scores[rescue_candidate_indices]
                     k_rescue = min(config.rescue_budget, len(rescue_candidate_indices))
-                    _, rescue_top_indices = torch.topk(rescue_candidate_scores, k_rescue, largest=True)
+                    top_vals, rescue_top_indices = torch.topk(
+                        rescue_candidate_scores, k_rescue, largest=True
+                    )
                     rescue_from_head = rescue_candidate_indices[rescue_top_indices].tolist()
+                    rescue_vals = top_vals.tolist()
+                    for tok_idx, tok_score in zip(rescue_from_head, rescue_vals):
+                        # Each rescue token is unique within a group thanks to
+                        # the candidate mask above, so this dict entry is fresh.
+                        rescue_scores_dict[tok_idx] = float(tok_score)
                     rescue_tokens.extend(rescue_from_head)
-            
-            # Combine all selected
+
             final_selected = list(selected_set) + rescue_tokens
-            
-            # Enforce budget
+
+            # Enforce budget. Priority: always_keep > vote > rescue.
             if len(final_selected) > budget:
-                # Priority: always_keep > vote > rescue
-                # Keep always_keep and vote, trim rescue by score
                 guaranteed = list(always_keep_set) + selected_vote
                 remaining_budget = budget - len(guaranteed)
-                
+
                 if remaining_budget > 0:
-                    rescue_scores_dict = {
-                        idx: scores_group[:, idx].max().item() for idx in rescue_tokens
-                    }
                     rescue_sorted = sorted(
-                        rescue_tokens, key=lambda x: rescue_scores_dict[x], reverse=True
+                        rescue_tokens,
+                        key=lambda x: rescue_scores_dict[x],
+                        reverse=True,
                     )
                     final_selected = guaranteed + rescue_sorted[:remaining_budget]
                 else:
                     final_selected = guaranteed[:budget]
-            
+
             mask[layer_idx, kv_head, final_selected] = True
     
     return mask

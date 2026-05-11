@@ -58,79 +58,67 @@ def generate_with_compressed_cache(
         logits = outputs.logits
         past_key_values = outputs.past_key_values
         original_seq_len = input_ids.shape[1]
-    else:
-        # Continuing with compressed cache
-        logits = None
-    
-    # Get next token
-    if logits is not None:
+        # First predicted token comes from prefill argmax over the last position.
         next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
     else:
-        # Need to get logits for first token
+        # Caller already ran prefill (typically with compression) and passes the
+        # first predicted token via input_ids.
         next_token = input_ids[:, -1:].clone()
-    
-    generated = []
-    
-    for step in range(max_new_tokens):
-        # Current logical position
+
+    # Include the first predicted token so the caller does not have to.
+    generated = [next_token]
+
+    if next_token.item() == tokenizer.eos_token_id:
+        return next_token, {"num_generated": 1}
+
+    for step in range(max_new_tokens - 1):
+        # Logical position of the *current* token being fed into the model.
+        # generated already holds (step + 1) tokens: the first one was the prefill
+        # argmax (logical position = original_seq_len), so this step's token sits
+        # at original_seq_len + step.
         current_position = original_seq_len + step
-        
-        # Prepare forward kwargs
+
         forward_kwargs = {
             "input_ids": next_token,
             "past_key_values": past_key_values,
             "use_cache": True,
             "return_dict": True,
         }
-        
-        # Add position_ids if supported
+
         if supports_position_ids:
-            position_ids = torch.tensor(
+            forward_kwargs["position_ids"] = torch.tensor(
                 [[current_position]], device=device, dtype=torch.long
             )
-            forward_kwargs["position_ids"] = position_ids
-        
-        # Add cache_position if supported
+
         if supports_cache_position and use_cache_position:
-            cache_position = torch.tensor(
+            forward_kwargs["cache_position"] = torch.tensor(
                 [current_position], device=device, dtype=torch.long
             )
-            forward_kwargs["cache_position"] = cache_position
-        
-        # Add attention_mask
-        # For compressed cache, attention_mask should allow attending to all retained keys
-        if past_key_values is not None:
-            cache_len = past_key_values[0][0].shape[2]  # Physical cache length
-            # Simple approach: create mask for cache + current token
-            attention_mask_decode = torch.ones(
-                batch_size, cache_len + step + 1, device=device, dtype=torch.long
-            )
-            forward_kwargs["attention_mask"] = attention_mask_decode
-        
-        # Forward pass
+
+        # cache_len already reflects any growth from previous decode steps; we
+        # only add 1 for the token we are feeding now.
+        cache_len = past_key_values.layers[0].keys.shape[2]
+        forward_kwargs["attention_mask"] = torch.ones(
+            batch_size, cache_len + 1, device=device, dtype=torch.long
+        )
+
         outputs = model(**forward_kwargs)
-        
+
         logits = outputs.logits
         past_key_values = outputs.past_key_values
-        
-        # Get next token
+
         next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated.append(next_token)
-        
-        # Check for EOS
+
         if next_token.item() == tokenizer.eos_token_id:
             break
-    
-    # Concatenate generated tokens
-    if generated:
-        generated_ids = torch.cat(generated, dim=1)
-    else:
-        generated_ids = torch.empty(batch_size, 0, dtype=torch.long, device=device)
-    
+
+    generated_ids = torch.cat(generated, dim=1)
+
     stats = {
-        "num_generated": len(generated),
+        "num_generated": generated_ids.shape[1],
     }
-    
+
     return generated_ids, stats
 
 

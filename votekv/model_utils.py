@@ -37,6 +37,7 @@ def load_model_and_tokenizer(
         torch_dtype=dtype,
         device_map=device if device != "cpu" else None,
         low_cpu_mem_usage=True,
+        attn_implementation="eager",  # Required for output_attentions=True
     )
     
     model.eval()
