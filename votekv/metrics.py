@@ -134,10 +134,8 @@ def compute_vote_histogram(
         for kv_head in range(num_kv_heads):
             scores_group = group_scores[layer_idx, kv_head]
             selected_mask = mask[layer_idx, kv_head]
-            
-            # Count votes for each token
-            vote_counts = torch.zeros(seq_len, dtype=torch.int32)
-            
+            vote_counts = torch.zeros(seq_len, dtype=torch.int32, device=scores.device)
+
             for head_in_group in range(group_size):
                 _, top_indices = torch.topk(scores_group[head_in_group], topk, largest=True)
                 vote_counts[top_indices] += 1

@@ -28,25 +28,27 @@ def convert_kv_head_mask_to_layer_indices(
     """
     num_layers, num_kv_heads, seq_len = mask.shape
     selected_indices_per_layer = []
-    
+
+    # Make sure mask and scores live on the same device before mixing them in
+    if mask.device != scores.device:
+        mask = mask.to(scores.device)
+
     for layer_idx in range(num_layers):
         layer_mask = mask[layer_idx]  # [num_kv_heads, seq_len]
-        
-        # Take union: token selected if ANY KV head selected it
+
+        # Take union: token selected if ANY KV head selected it.
         union_mask = layer_mask.any(dim=0)  # [seq_len]
         selected = torch.where(union_mask)[0]
-        
+
         if len(selected) <= max_budget:
-            # Within budget
             selected_sorted = torch.sort(selected).values
             selected_indices_per_layer.append(selected_sorted)
         else:
-            # Exceeds budget: rank by importance
-            importance = layer_mask.float().sum(dim=0)  # How many KV heads selected each token
-            
-            # Tie-break with average score across query heads
+            # Exceeds budget: rank by importance (how many KV heads agreed),
+            # tie-break with average score across query heads.
+            importance = layer_mask.float().sum(dim=0)
             avg_score = scores[layer_idx].mean(dim=0)  # [seq_len]
-            
+
             composite = importance * 1e6 + avg_score
             selected_scores = composite[selected]
             

@@ -78,9 +78,8 @@ def select_gqa_mean(
     
     budget = config.resolve_budget(seq_len)
     always_keep = get_always_keep_indices(seq_len, config.sink_tokens, config.recent_tokens)
-    
-    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool)
-    
+    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool, device=scores.device)
+
     for layer_idx in range(num_layers):
         for kv_head in range(num_kv_heads):
             # Mean score across query heads in this group
@@ -120,9 +119,9 @@ def select_gqa_max(
     group_scores = group_scores_by_gqa(scores, num_attention_heads, num_kv_heads)
     budget = config.resolve_budget(seq_len)
     always_keep = get_always_keep_indices(seq_len, config.sink_tokens, config.recent_tokens)
-    
-    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool)
-    
+
+    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool, device=scores.device)
+
     for layer_idx in range(num_layers):
         for kv_head in range(num_kv_heads):
             # Max score across query heads in this group
@@ -162,9 +161,9 @@ def select_gqa_vote(
     budget = config.resolve_budget(seq_len)
     always_keep = get_always_keep_indices(seq_len, config.sink_tokens, config.recent_tokens)
     vote_topk = min(config.vote_topk, seq_len - len(always_keep))
-    
-    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool)
-    
+
+    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool, device=scores.device)
+
     for layer_idx in range(num_layers):
         for kv_head in range(num_kv_heads):
             scores_group = group_scores[layer_idx, kv_head]  # [group_size, seq_len]
@@ -230,9 +229,9 @@ def select_gqa_vote_rescue(
     always_keep_set = set(always_keep)
     
     vote_topk = min(config.vote_topk, seq_len - len(always_keep))
-    
-    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool)
-    
+
+    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool, device=scores.device)
+
     for layer_idx in range(num_layers):
         for kv_head in range(num_kv_heads):
             scores_group = group_scores[layer_idx, kv_head]  # [group_size, seq_len]
@@ -365,9 +364,9 @@ def select_gqa_rank_vote(
     budget = config.resolve_budget(seq_len)
     always_keep = get_always_keep_indices(seq_len, config.sink_tokens, config.recent_tokens)
     vote_topk = min(config.vote_topk, seq_len - len(always_keep))
-    
-    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool)
-    
+
+    mask = torch.zeros(num_layers, num_kv_heads, seq_len, dtype=torch.bool, device=scores.device)
+
     for layer_idx in range(num_layers):
         for kv_head in range(num_kv_heads):
             scores_group = group_scores[layer_idx, kv_head]  # [group_size, seq_len]
