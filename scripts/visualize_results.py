@@ -111,45 +111,130 @@ def plot_needle_heatmap(df: pd.DataFrame, output_dir: Path):
             print(f"Saved: {output_file}")
 
 
+# Canonical method order + per-method styling (used by tradeoff and Figure 1).
+_METHOD_ORDER = [
+    'full_cache', 'gqa_mean', 'gqa_max', 'gqa_vote', 'gqa_rank_vote', 'gqa_vote_rescue',
+]
+_METHOD_COLORS = {
+    'full_cache':      '#95a5a6',
+    'gqa_mean':        '#3498db',
+    'gqa_max':         '#e67e22',
+    'gqa_vote':        '#9b59b6',
+    'gqa_rank_vote':   '#1abc9c',
+    'gqa_vote_rescue': '#e74c3c',
+}
+_METHOD_MARKERS = {
+    'full_cache':      'o',
+    'gqa_mean':        's',
+    'gqa_max':         '^',
+    'gqa_vote':        'D',
+    'gqa_rank_vote':   'v',
+    'gqa_vote_rescue': '*',
+}
+
+
+def _ordered_methods(present):
+    """Return present methods in canonical order, unknown ones appended."""
+    known = [m for m in _METHOD_ORDER if m in present]
+    extra = [m for m in present if m not in _METHOD_ORDER]
+    return known + extra
+
+
 def plot_compression_accuracy_tradeoff(df: pd.DataFrame, output_dir: Path):
-    """Plot accuracy vs compression ratio tradeoff"""
+    """Plot accuracy vs compression ratio as small multiples (one panel per method).
+
+    Each panel shows the mean accuracy across all depths at every compression
+    ratio that appeared in the sweep, with std error bars to expose variance.
+    Methods no longer overlap, and we use ALL depth measurements rather than
+    just the middle one — so the curves have meaningful uncertainty.
+    """
     context_lengths = sorted(df['context_len'].unique())
-    
+
     for ctx_len in context_lengths:
-        subset = df[df['context_len'] == ctx_len]
-        
-        # Filter to middle depth (most challenging)
-        depths = sorted(subset['depth'].unique())
-        middle_depth = depths[len(depths) // 2]
-        subset = subset[subset['depth'] == middle_depth]
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        methods = subset['method'].unique()
-        colors = plt.cm.tab10(range(len(methods)))
-        
+        ctx_df = df[df['context_len'] == ctx_len]
+        methods = _ordered_methods(list(ctx_df['method'].unique()))
+        n = len(methods)
+        cols = 3 if n >= 3 else max(n, 1)
+        rows = (n + cols - 1) // cols
+
+        fig, axes = plt.subplots(
+            rows, cols,
+            figsize=(4.2 * cols, 3.4 * rows),
+            sharex=True, sharey=True,
+            squeeze=False,
+        )
+        axes_flat = axes.flatten()
+
+        # Global x range across the whole grid for fair comparison.
+        all_ratios = ctx_df['compression_ratio'].values
+        x_min = max(0.95, all_ratios.min() * 0.95)
+        x_max = all_ratios.max() * 1.05
+
         for idx, method in enumerate(methods):
-            method_data = subset[subset['method'] == method].copy()
-            method_data = method_data.sort_values('compression_ratio')
-            
-            ax.plot(method_data['compression_ratio'], 
-                   method_data['correct_contains'] * 100,
-                   marker='o', label=method, linewidth=2, markersize=8,
-                   color=colors[idx])
-        
-        ax.set_xlabel('Compression Ratio', fontsize=14)
-        ax.set_ylabel('Accuracy (%)', fontsize=14)
-        ax.set_title(f'Accuracy vs Compression Ratio\nContext: {ctx_len}, Depth: {middle_depth:.1f}', 
-                    fontsize=16)
-        ax.legend(fontsize=11)
-        ax.grid(True, alpha=0.3)
-        
+            ax = axes_flat[idx]
+            mdf = ctx_df[ctx_df['method'] == method]
+
+            # Aggregate over depths: mean and std at each compression ratio.
+            grouped = (
+                mdf.groupby('compression_ratio')['correct_contains']
+                .agg(['mean', 'std', 'count'])
+                .reset_index()
+                .sort_values('compression_ratio')
+            )
+            grouped['mean_pct'] = grouped['mean'] * 100
+            grouped['std_pct'] = grouped['std'].fillna(0) * 100
+
+            color = _METHOD_COLORS.get(method, 'gray')
+            marker = _METHOD_MARKERS.get(method, 'o')
+
+            ax.errorbar(
+                grouped['compression_ratio'],
+                grouped['mean_pct'],
+                yerr=grouped['std_pct'],
+                marker=marker,
+                linewidth=2,
+                markersize=10,
+                color=color,
+                ecolor=color,
+                capsize=4,
+                alpha=0.95,
+            )
+
+            # 100% reference (full cache theoretical ceiling).
+            ax.axhline(y=100, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+
+            # Overall mean accuracy as inline annotation.
+            overall = mdf['correct_contains'].mean() * 100
+            ax.text(
+                0.04, 0.06, f'avg = {overall:.1f}%',
+                transform=ax.transAxes, fontsize=10,
+                bbox=dict(facecolor='white', alpha=0.85, edgecolor=color, linewidth=1),
+            )
+
+            ax.set_title(method, fontweight='bold', fontsize=12, color=color)
+            ax.set_ylim(-3, 108)
+            if x_max > x_min:
+                ax.set_xlim(x_min, x_max)
+            ax.grid(True, alpha=0.3)
+
+        # Hide any unused subplots.
+        for idx in range(n, len(axes_flat)):
+            axes_flat[idx].axis('off')
+
+        # Common axis labels.
+        fig.supxlabel('Compression Ratio', fontsize=13)
+        fig.supylabel('Accuracy (%)  (mean ± std over depths)', fontsize=13)
+        fig.suptitle(
+            f'Accuracy vs Compression Ratio  —  context = {ctx_len} tokens',
+            fontsize=14, fontweight='bold', y=1.00,
+        )
+
         plt.tight_layout()
-        
+
         output_file = output_dir / f'compression_accuracy_ctx{ctx_len}.png'
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         plt.close()
-        
+
         print(f"Saved: {output_file}")
 
 
