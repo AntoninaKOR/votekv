@@ -147,8 +147,23 @@ def plot_compression_accuracy_tradeoff(df: pd.DataFrame, output_dir: Path):
     ratio that appeared in the sweep, with std error bars to expose variance.
     Methods no longer overlap, and we use ALL depth measurements rather than
     just the middle one — so the curves have meaningful uncertainty.
+
+    The X axis range is auto-fit from data with a 10% headroom on top, but
+    never tighter than [0.5, 60] — that keeps `full_cache` (ratio=1.0) visible
+    and prevents a sparse quick-run from squishing the curve into one corner.
     """
     context_lengths = sorted(df['context_len'].unique())
+    x_min = 0.5
+    data_max = float(df['compression_ratio'].max())
+    x_max = max(60.0, data_max * 1.10)
+
+    # `full_cache` has compression_ratio == 1.0 exactly (no compression), so it
+    # always lands at a single x. Other methods are bucketed by `budget_ratio`
+    # (a clean float we control), then the compression_ratio is averaged
+    # WITHIN that bucket across depths — otherwise tiny variations in
+    # tokenised prompt length produce 5 near-identical x's that pandas treats
+    # as separate groups, and errorbar's line connects them into a fake "tail".
+    group_key = 'budget_ratio' if 'budget_ratio' in df.columns else 'compression_ratio'
 
     for ctx_len in context_lengths:
         ctx_df = df[df['context_len'] == ctx_len]
@@ -165,24 +180,30 @@ def plot_compression_accuracy_tradeoff(df: pd.DataFrame, output_dir: Path):
         )
         axes_flat = axes.flatten()
 
-        # Global x range across the whole grid for fair comparison.
-        all_ratios = ctx_df['compression_ratio'].values
-        x_min = max(0.95, all_ratios.min() * 0.95)
-        x_max = all_ratios.max() * 1.05
+        # Shared x range across the whole grid for fair side-by-side comparison.
+        # We use a fixed ceiling (default 60) so that quick/full/wide runs are
+        # plotted on the same scale and you can stack figures from different
+        # models without the x axis subtly shifting.
+        x_lo, x_hi = x_min, x_max
 
         for idx, method in enumerate(methods):
             ax = axes_flat[idx]
             mdf = ctx_df[ctx_df['method'] == method]
 
-            # Aggregate over depths: mean and std at each compression ratio.
+            # Aggregate over depths: one row per (method, budget_ratio).
             grouped = (
-                mdf.groupby('compression_ratio')['correct_contains']
-                .agg(['mean', 'std', 'count'])
+                mdf.groupby(group_key)
+                .agg(
+                    accuracy_mean=('correct_contains', 'mean'),
+                    accuracy_std=('correct_contains', 'std'),
+                    compression_ratio=('compression_ratio', 'mean'),
+                    n=('correct_contains', 'count'),
+                )
                 .reset_index()
                 .sort_values('compression_ratio')
             )
-            grouped['mean_pct'] = grouped['mean'] * 100
-            grouped['std_pct'] = grouped['std'].fillna(0) * 100
+            grouped['mean_pct'] = grouped['accuracy_mean'] * 100
+            grouped['std_pct'] = grouped['accuracy_std'].fillna(0) * 100
 
             color = _METHOD_COLORS.get(method, 'gray')
             marker = _METHOD_MARKERS.get(method, 'o')
@@ -203,7 +224,7 @@ def plot_compression_accuracy_tradeoff(df: pd.DataFrame, output_dir: Path):
             # 100% reference (full cache theoretical ceiling).
             ax.axhline(y=100, color='gray', linestyle=':', linewidth=1, alpha=0.5)
 
-            # Overall mean accuracy as inline annotation.
+            # Annotation: overall accuracy across all sweep cells for this method.
             overall = mdf['correct_contains'].mean() * 100
             ax.text(
                 0.04, 0.06, f'avg = {overall:.1f}%',
@@ -213,8 +234,7 @@ def plot_compression_accuracy_tradeoff(df: pd.DataFrame, output_dir: Path):
 
             ax.set_title(method, fontweight='bold', fontsize=12, color=color)
             ax.set_ylim(-3, 108)
-            if x_max > x_min:
-                ax.set_xlim(x_min, x_max)
+            ax.set_xlim(x_lo, x_hi)
             ax.grid(True, alpha=0.3)
 
         # Hide any unused subplots.
