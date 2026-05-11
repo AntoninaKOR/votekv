@@ -1,0 +1,26 @@
+# VoteKV configuration for Llama-3.1-8B-Instruct
+#
+# GQA structure: 32 query heads / 8 KV heads -> group_size = 4
+# Same group_size as Mistral, so default vote/rescue budgets transfer well.
+# Llama-3.1 natively supports up to 131072 tokens; we cap at 16384 for MVP
+# to keep eager-attention output_attentions tensors manageable.
+
+model_name: "meta-llama/Llama-3.1-8B-Instruct"
+kv_method: "gqa_vote_rescue"
+max_context_len: 16384
+max_new_tokens: 64
+observation_window: 32
+kv_budget: null
+kv_budget_ratio: 0.08
+vote_topk: 128
+group_budget: null
+rescue_budget: 4
+sink_tokens: 4
+recent_tokens: 32
+dtype: "bfloat16"
+device: "cuda"
+use_flash_attention: false
+output_attentions: true
+batch_size: 1
+seed: 42
+cache_layout: "layer_shared"

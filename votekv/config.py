@@ -1,7 +1,10 @@
 """Configuration dataclass for VoteKV"""
 
-from dataclasses import dataclass, field
-from typing import Optional, Literal
+import logging
+from dataclasses import dataclass, field, fields
+from typing import Optional, Literal, Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,3 +74,49 @@ class VoteKVConfig:
             "float32": torch.float32,
         }
         return dtype_map.get(self.dtype, torch.bfloat16)
+
+    # ------------------------------------------------------------------
+    # YAML / CLI integration
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_yaml(cls, path: str) -> "VoteKVConfig":
+        """Load configuration from a YAML file.
+
+        Unknown keys are silently dropped (with a warning) so that the same
+        config file can be reused across script versions.
+        """
+        import yaml
+
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+
+        known = {f.name for f in fields(cls)}
+        unknown = sorted(set(data.keys()) - known)
+        if unknown:
+            logger.warning(
+                f"Ignoring unknown YAML keys in {path}: {unknown}"
+            )
+
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    @classmethod
+    def from_args(
+        cls,
+        args: Any,
+        yaml_path: Optional[str] = None,
+    ) -> "VoteKVConfig":
+        """Build a config with three-layer precedence: defaults < YAML < CLI.
+
+        Any attribute on `args` that matches a VoteKVConfig field and is not
+        None overrides the corresponding value loaded from YAML (or the class
+        default if no YAML was provided).
+        """
+        config = cls.from_yaml(yaml_path) if yaml_path else cls()
+
+        for f in fields(cls):
+            if hasattr(args, f.name):
+                value = getattr(args, f.name)
+                if value is not None:
+                    setattr(config, f.name, value)
+
+        return config

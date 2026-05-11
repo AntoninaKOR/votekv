@@ -104,32 +104,33 @@ def analyze_disagreement(
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze GQA disagreement")
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.2")
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="YAML config with model + VoteKV parameters. CLI flags override YAML values.",
+    )
+    parser.add_argument("--model_name", type=str, default=None,
+                        help="Override model from YAML / default Mistral-7B-Instruct-v0.2")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--vote_topk", type=int, default=None)
+    parser.add_argument("--observation_window", type=int, default=None)
+
+    # Script-only flags.
     parser.add_argument("--prompt_file", type=str, help="Path to prompt file")
     parser.add_argument("--prompt_len", type=int, default=4096)
-    parser.add_argument("--vote_topk", type=int, default=128)
-    parser.add_argument("--observation_window", type=int, default=32)
     parser.add_argument("--output_dir", type=str, default="outputs/analysis")
-    parser.add_argument("--device", type=str, default="cuda")
-    
+
     args = parser.parse_args()
-    
+
     setup_logging()
-    
-    # Create output directory
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Load model
-    config = VoteKVConfig(
-        model_name=args.model_name,
-        device=args.device,
-        vote_topk=args.vote_topk,
-        observation_window=args.observation_window,
-    )
-    
+
+    # Defaults <- YAML <- CLI overrides.
+    config = VoteKVConfig.from_args(args, yaml_path=args.config)
+
     model, tokenizer = load_model_and_tokenizer(
-        args.model_name, device=args.device, dtype=config.get_dtype()
+        config.model_name, device=config.device, dtype=config.get_dtype()
     )
     
     # Get prompt

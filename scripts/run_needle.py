@@ -245,31 +245,40 @@ def evaluate_needle(
 
 def main():
     parser = argparse.ArgumentParser(description="VoteKV Needle-in-Haystack Evaluation")
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.2")
-    parser.add_argument("--methods", nargs="+", default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"])
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="YAML config with model + VoteKV parameters (e.g. configs/llama_3.1_8b_votekv.yaml). "
+             "CLI flags override YAML values.",
+    )
+    parser.add_argument("--model_name", type=str, default=None,
+                        help="Override model from YAML / default Mistral-7B-Instruct-v0.2")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--observation_window", type=int, default=None)
+    parser.add_argument("--vote_topk", type=int, default=None)
+    parser.add_argument("--rescue_budget", type=int, default=None)
+
+    # Sweep / script flags (not part of VoteKVConfig).
+    parser.add_argument("--methods", nargs="+",
+                        default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"])
     parser.add_argument("--context_lengths", nargs="+", type=int, default=[4096, 8192])
     parser.add_argument("--depths", nargs="+", type=float, default=[0.0, 0.25, 0.5, 0.75, 1.0])
     parser.add_argument("--budget_ratios", nargs="+", type=float, default=[0.04, 0.08, 0.16])
-    parser.add_argument("--observation_window", type=int, default=32)
-    parser.add_argument("--vote_topk", type=int, default=128)
-    parser.add_argument("--rescue_budget", type=int, default=4)
     parser.add_argument("--output_dir", type=str, default="outputs/needle")
-    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--passkey", type=str, default="493827")
-    
+
     args = parser.parse_args()
-    
+
     setup_logging()
-    
-    # Create output directory
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Load model once
-    logger.info(f"Loading model: {args.model_name}")
-    config_base = VoteKVConfig(model_name=args.model_name, device=args.device)
+
+    # Defaults <- YAML <- CLI overrides.
+    config_base = VoteKVConfig.from_args(args, yaml_path=args.config)
+
+    logger.info(f"Loading model: {config_base.model_name}")
     model, tokenizer = load_model_and_tokenizer(
-        args.model_name, device=args.device, dtype=config_base.get_dtype()
+        config_base.model_name, device=config_base.device, dtype=config_base.get_dtype()
     )
     gqa_info = get_gqa_info(model)
     logger.info(f"GQA Info: {gqa_info}")
@@ -286,14 +295,9 @@ def main():
                         f"budget={budget_ratio}, method={method}"
                     )
                     
-                    config = VoteKVConfig(
-                        model_name=args.model_name,
-                        device=args.device,
-                        kv_budget_ratio=budget_ratio,
-                        observation_window=args.observation_window,
-                        vote_topk=args.vote_topk,
-                        rescue_budget=args.rescue_budget,
-                    )
+                    # Clone the base config, override only budget for this sweep cell.
+                    config = VoteKVConfig.from_args(args, yaml_path=args.config)
+                    config.kv_budget_ratio = budget_ratio
                     
                     try:
                         result = evaluate_needle(

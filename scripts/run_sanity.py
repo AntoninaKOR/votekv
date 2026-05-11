@@ -192,18 +192,28 @@ def run_sanity_test(
 
 def main():
     parser = argparse.ArgumentParser(description="VoteKV Sanity Test")
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.2")
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="YAML config file with model + VoteKV parameters "
+             "(e.g. configs/mistral_7b_votekv.yaml). CLI flags override YAML values.",
+    )
+    # All VoteKV-related flags default to None so that we can detect whether
+    # the user explicitly passed them and let YAML / class defaults fill the gap.
+    parser.add_argument("--model_name", type=str, default=None,
+                        help="Override model from YAML / default Mistral-7B-Instruct-v0.2")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--kv_budget_ratio", type=float, default=None)
+    parser.add_argument("--observation_window", type=int, default=None)
+    parser.add_argument("--vote_topk", type=int, default=None)
+    parser.add_argument("--rescue_budget", type=int, default=None)
+
+    # Script-only flags (not part of VoteKVConfig).
     parser.add_argument(
         "--methods",
         nargs="+",
         default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"],
     )
     parser.add_argument("--target_len", type=int, default=1024, help="Target prompt length")
-    parser.add_argument("--kv_budget_ratio", type=float, default=0.08)
-    parser.add_argument("--observation_window", type=int, default=32)
-    parser.add_argument("--vote_topk", type=int, default=128)
-    parser.add_argument("--rescue_budget", type=int, default=4)
-    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument(
         "--verbose", action="store_true",
         help="Enable DEBUG logs everywhere (per-layer compression, model config, internals).",
@@ -222,14 +232,8 @@ def main():
         # the per-layer union/budget messages without the rest of the chatter.
         logging.getLogger("votekv.cache_compression").setLevel(logging.DEBUG)
 
-    config = VoteKVConfig(
-        model_name=args.model_name,
-        device=args.device,
-        kv_budget_ratio=args.kv_budget_ratio,
-        observation_window=args.observation_window,
-        vote_topk=args.vote_topk,
-        rescue_budget=args.rescue_budget,
-    )
+    # Defaults <- YAML <- CLI.
+    config = VoteKVConfig.from_args(args, yaml_path=args.config)
 
     # ----- Load model and tokenizer once -----
     _banner("SETUP")

@@ -1,0 +1,26 @@
+# VoteKV configuration for Qwen2.5-7B-Instruct
+#
+# GQA structure: 28 query heads / 4 KV heads -> group_size = 7
+# Larger group_size than Mistral/Llama, so we reduce rescue_budget so that
+# total rescue tokens per KV-head (group_size * rescue_budget = 7 * 3 = 21)
+# stays comparable to Mistral's 4 * 4 = 16.
+
+model_name: "Qwen/Qwen2.5-7B-Instruct"
+kv_method: "gqa_vote_rescue"
+max_context_len: 16384
+max_new_tokens: 64
+observation_window: 32
+kv_budget: null
+kv_budget_ratio: 0.08
+vote_topk: 128
+group_budget: null
+rescue_budget: 3
+sink_tokens: 4
+recent_tokens: 32
+dtype: "bfloat16"
+device: "cuda"
+use_flash_attention: false
+output_attentions: true
+batch_size: 1
+seed: 42
+cache_layout: "layer_shared"

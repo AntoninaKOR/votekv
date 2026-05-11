@@ -151,48 +151,47 @@ def benchmark_method(
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark VoteKV methods")
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.2")
-    parser.add_argument("--methods", nargs="+", default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"])
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="YAML config with model + VoteKV parameters. CLI flags override YAML values.",
+    )
+    parser.add_argument("--model_name", type=str, default=None,
+                        help="Override model from YAML / default Mistral-7B-Instruct-v0.2")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--kv_budget_ratio", type=float, default=None)
+    parser.add_argument("--observation_window", type=int, default=None)
+    parser.add_argument("--vote_topk", type=int, default=None)
+    parser.add_argument("--rescue_budget", type=int, default=None)
+
+    # Script-only flags.
+    parser.add_argument("--methods", nargs="+",
+                        default=["full_cache", "gqa_mean", "gqa_max", "gqa_vote", "gqa_vote_rescue"])
     parser.add_argument("--prompt_file", type=str, help="Path to file with prompt")
-    parser.add_argument("--prompt_len", type=int, default=4096, help="Generate synthetic prompt of this length")
-    parser.add_argument("--kv_budget_ratio", type=float, default=0.08)
-    parser.add_argument("--observation_window", type=int, default=32)
-    parser.add_argument("--vote_topk", type=int, default=128)
-    parser.add_argument("--rescue_budget", type=int, default=4)
+    parser.add_argument("--prompt_len", type=int, default=4096,
+                        help="Generate synthetic prompt of this length")
     parser.add_argument("--output_dir", type=str, default="outputs/benchmark")
-    parser.add_argument("--device", type=str, default="cuda")
-    
+
     args = parser.parse_args()
-    
+
     setup_logging()
-    
-    # Load model
-    config_base = VoteKVConfig(model_name=args.model_name, device=args.device)
+
+    # Defaults <- YAML <- CLI overrides.
+    config = VoteKVConfig.from_args(args, yaml_path=args.config)
+    config.max_new_tokens = 64  # benchmark always uses 64 new tokens for fair comparison
+
     model, tokenizer = load_model_and_tokenizer(
-        args.model_name, device=args.device, dtype=config_base.get_dtype()
+        config.model_name, device=config.device, dtype=config.get_dtype()
     )
     gqa_info = get_gqa_info(model)
-    
-    # Get prompt
+
+    # Prompt source: file or synthetic.
     if args.prompt_file:
         with open(args.prompt_file) as f:
             prompt = f.read()
     else:
-        # Generate synthetic prompt
         filler = "This is a test sentence. " * 100
         prompt = filler * (args.prompt_len // 500)
         prompt += "\n\nQuestion: Summarize the above text.\nAnswer:"
-    
-    # Run benchmarks
-    config = VoteKVConfig(
-        model_name=args.model_name,
-        device=args.device,
-        kv_budget_ratio=args.kv_budget_ratio,
-        observation_window=args.observation_window,
-        vote_topk=args.vote_topk,
-        rescue_budget=args.rescue_budget,
-        max_new_tokens=64,
-    )
     
     results = []
     for method in args.methods:

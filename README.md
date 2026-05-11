@@ -34,7 +34,9 @@ votekv/
 │   ├── benchmark_methods.py       # Benchmark all methods
 │   └── analyze_disagreement.py    # GQA disagreement analysis
 ├── configs/
-│   └── mistral_7b_votekv.yaml     # Default config
+│   ├── mistral_7b_votekv.yaml     # Mistral-7B-Instruct-v0.2 (group_size=4)
+│   ├── llama_3.1_8b_votekv.yaml   # Llama-3.1-8B-Instruct   (group_size=4)
+│   └── qwen2.5_7b_votekv.yaml     # Qwen2.5-7B-Instruct     (group_size=7)
 └── requirements.txt
 ```
 
@@ -55,31 +57,44 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Choosing a model
+
+Every script accepts a `--config configs/<model>.yaml` flag
+
+```bash
+# Mistral-7B (default)
+python scripts/run_sanity.py --config configs/mistral_7b_votekv.yaml
+
+# Llama-3.1-8B
+python scripts/run_sanity.py --config configs/llama_3.1_8b_votekv.yaml
+
+# Qwen2.5-7B (different group_size=7, uses rescue_budget=3)
+python scripts/run_sanity.py --config configs/qwen2.5_7b_votekv.yaml
+
+# Override a single field from a base config
+python scripts/run_sanity.py \
+  --config configs/llama_3.1_8b_votekv.yaml \
+  --kv_budget_ratio 0.04
+```
+
 ### Sanity Check
 
 ```bash
 python scripts/run_sanity.py \
-  --model_name mistralai/Mistral-7B-Instruct-v0.2 \
+  --config configs/mistral_7b_votekv.yaml \
   --methods full_cache gqa_mean gqa_max gqa_vote gqa_vote_rescue \
-  --target_len 1024 \
-  --kv_budget_ratio 0.08 \
-  --observation_window 32 \
-  --vote_topk 128 \
-  --rescue_budget 4
+  --target_len 1024
 ```
 
 ### Needle-in-Haystack Evaluation
 
 ```bash
 python scripts/run_needle.py \
-  --model_name mistralai/Mistral-7B-Instruct-v0.2 \
+  --config configs/mistral_7b_votekv.yaml \
   --methods full_cache gqa_mean gqa_max gqa_vote gqa_vote_rescue \
   --context_lengths 4096 8192 \
   --depths 0.0 0.25 0.5 0.75 1.0 \
   --budget_ratios 0.04 0.08 0.16 \
-  --observation_window 32 \
-  --vote_topk 128 \
-  --rescue_budget 4 \
   --output_dir outputs/needle_mistral
 ```
 
@@ -87,10 +102,9 @@ python scripts/run_needle.py \
 
 ```bash
 python scripts/benchmark_methods.py \
-  --model_name mistralai/Mistral-7B-Instruct-v0.2 \
+  --config configs/mistral_7b_votekv.yaml \
   --methods full_cache gqa_mean gqa_max gqa_vote gqa_vote_rescue \
   --prompt_len 4096 \
-  --kv_budget_ratio 0.08 \
   --output_dir outputs/benchmark
 ```
 
@@ -98,9 +112,8 @@ python scripts/benchmark_methods.py \
 
 ```bash
 python scripts/analyze_disagreement.py \
-  --model_name mistralai/Mistral-7B-Instruct-v0.2 \
+  --config configs/mistral_7b_votekv.yaml \
   --prompt_len 4096 \
-  --vote_topk 128 \
   --output_dir outputs/analysis
 ```
 
@@ -145,11 +158,15 @@ Key parameters (see `configs/mistral_7b_votekv.yaml`):
 
 ## Supported Models
 
-MVP: `mistralai/Mistral-7B-Instruct-v0.2`
+Selected via `--config configs/<model>.yaml`:
 
-The code is modular and can be extended to:
-- `meta-llama/Llama-3.1-8B-Instruct`
-- `Qwen/Qwen2.5-7B-Instruct`
+| Model | Config | Q-heads | KV-heads | group_size | Notes |
+|-------|--------|---------|----------|------------|-------|
+| `mistralai/Mistral-7B-Instruct-v0.2` | `configs/mistral_7b_votekv.yaml` | 32 | 8 | 4 | Default |
+| `meta-llama/Llama-3.1-8B-Instruct` | `configs/llama_3.1_8b_votekv.yaml` | 32 | 8 | 4 | Native 128k context, capped at 16k for MVP |
+| `Qwen/Qwen2.5-7B-Instruct` | `configs/qwen2.5_7b_votekv.yaml` | 28 | 4 | 7 | Larger group_size → `rescue_budget=3` |
+
+To add a new GQA model: copy one of the YAML files, change `model_name`, and (if `group_size` differs from 4) adjust `rescue_budget` so that `group_size * rescue_budget` stays in a similar range (~16-21 max-rescue per KV-head).
 
 ## Limitations (MVP)
 
