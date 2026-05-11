@@ -8,6 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import gc
 import torch
 import argparse
 import logging
@@ -181,7 +182,10 @@ def run_sanity_test(
 
     # Free compressed cache so the next method starts clean.
     del past_key_values, compressed_cache, outputs, logits, generated_ids
-    torch.cuda.empty_cache()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
 
     return {
         "method": method,

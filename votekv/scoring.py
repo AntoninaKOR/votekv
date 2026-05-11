@@ -49,14 +49,20 @@ def compute_snapkv_scores_via_hooks(
     Equivalent in math to `compute_snapkv_scores_from_attentions(outputs.attentions, ...)`
     but only holds one layer's attention tensor on the device at a time:
 
-      * Set `output_attentions=True` so the eager attention path returns weights.
-      * On every `self_attn` forward, a hook reads its `attn_weights`, sums over the
-        last `observation_window` query positions in float32, stores the resulting
-        per-layer `[num_heads, seq_len]` score, then RETURNS A MODIFIED OUTPUT TUPLE
-        with `attn_weights` replaced by `None`. PyTorch propagates the modified
-        return value to HF, so the upstream `all_self_attns` collection never
-        holds references to the dense [B, H, N, N] tensors — they are freed as
-        soon as the next layer starts.
+      * Run the forward with `output_attentions=False`. This bypasses HF's
+        `output_capturing.py` wrapper (newer transformers ≥ 5.x), which would
+        otherwise accumulate references to the dense [B, H, N, N] tensors of
+        every layer in an internal state and prevent them from being freed
+        between successive calls — quickly leading to OOM on 40 GB GPUs.
+      * Eager-attention `eager_attention_forward` STILL computes and returns
+        `(attn_output, attn_weights)` to its caller `self_attn.forward` unconditionally;
+        the decoder layer simply discards the second element. Our forward hook
+        sits on the `self_attn` module and sees the unmodified return tuple,
+        reads `attn_weights`, sums over the last `observation_window` query
+        positions in float32, stores the per-layer `[num_heads, seq_len]` score
+        on CPU/GPU, and RETURNS A MODIFIED OUTPUT TUPLE with `attn_weights`
+        replaced by `None`. The dense tensor becomes unreachable as soon as the
+        next decoder layer starts.
 
     Args:
         model: HF causal LM with `attn_implementation="eager"`.
@@ -108,11 +114,16 @@ def compute_snapkv_scores_via_hooks(
         hooks.append(mod.register_forward_hook(make_hook(idx)))
 
     try:
+        # IMPORTANT: pass output_attentions=False so HF's `output_capturing`
+        # wrapper does NOT collect dense attention tensors (which leaks across
+        # successive forward calls in transformers ≥ 5.x). Eager attention
+        # still returns attn_weights via the self_attn tuple — our forward
+        # hook captures it from there and immediately replaces it with None.
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             use_cache=use_cache,
-            output_attentions=True,  # required so eager self_attn returns weights
+            output_attentions=False,
             return_dict=True,
         )
     finally:

@@ -7,6 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import gc
 import torch
 import argparse
 import logging
@@ -228,7 +229,20 @@ def evaluate_needle(
         f"[{method}] depth={depth:.2f}, len={actual_prompt_len}: "
         f"output='{output_text}', correct={correct_contains}"
     )
-    
+
+    # Drop GPU references before returning so the caller's gc + empty_cache
+    # can actually reclaim the memory before the next of 180 sweep cells.
+    peak_memory_gb = (
+        torch.cuda.max_memory_allocated() / (1024 ** 3)
+        if torch.cuda.is_available() else 0.0
+    )
+    del outputs, past_key_values, compressed_cache, logits, next_token, generated_ids
+    if method != "full_cache":
+        try:
+            del scores, mask, selected_indices
+        except NameError:
+            pass
+
     return {
         "method": method,
         "context_len": context_len,
@@ -244,7 +258,7 @@ def evaluate_needle(
         "compression_sec": compression_time,
         "decode_sec": decode_time,
         "total_sec": total_time,
-        "peak_memory_gb": torch.cuda.max_memory_allocated() / (1024 ** 3),
+        "peak_memory_gb": peak_memory_gb,
     }
 
 
@@ -317,9 +331,16 @@ def main():
                         )
                         result["budget_ratio"] = budget_ratio
                         all_results.append(result)
-                        
+
                     except Exception as e:
                         logger.error(f"Error: {e}", exc_info=True)
+                    finally:
+                        # Reset between sweep cells — there are up to 180 of
+                        # them in full mode, so leaking even 1 GB per call OOMs.
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.reset_peak_memory_stats()
     
     # Save results
     output_file = output_dir / "needle_results.jsonl"

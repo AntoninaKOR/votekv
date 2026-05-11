@@ -4,6 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import gc
 import torch
 import argparse
 import logging
@@ -132,7 +133,8 @@ def benchmark_method(
         "decode_sec": decode_time,
         "total_sec": total_time,
         "tokens_per_sec": generated_ids.shape[1] / decode_time if decode_time > 0 else 0,
-        "peak_memory_gb": torch.cuda.max_memory_allocated() / (1024 ** 3),
+        "peak_memory_gb": torch.cuda.max_memory_allocated() / (1024 ** 3)
+            if torch.cuda.is_available() else 0.0,
         "output_text": output_text[:200],  # Truncate for logging
     }
     
@@ -150,7 +152,17 @@ def benchmark_method(
                 for vote_count, num_tokens in item["histogram"].items():
                     total_hist[vote_count] = total_hist.get(vote_count, 0) + num_tokens
             result["vote_histogram"] = total_hist
-    
+
+    # Explicit cleanup: drop every large GPU tensor we still hold a Python
+    # reference to. The CUDA caching allocator only releases memory when the
+    # refcount actually hits 0, so we must `del` before relying on
+    # `empty_cache()` in the caller's loop.
+    del outputs, past_key_values, compressed_cache, logits, next_token, generated_ids
+    if scores is not None:
+        del scores
+    if mask is not None:
+        del mask
+
     return result
 
 
@@ -203,11 +215,19 @@ def main():
         logger.info(f"\nBenchmarking: {method}")
         result = benchmark_method(model, tokenizer, config, method, gqa_info, prompt)
         results.append(result)
-        
+
         logger.info(f"  Retained: {result['retained_tokens']}/{result['prompt_len']} ({result['compression_ratio']:.2f}x)")
         logger.info(f"  Time: {result['total_sec']:.2f}s")
+        logger.info(f"  Peak memory: {result['peak_memory_gb']:.2f} GB")
         if "avg_disagreement" in result:
             logger.info(f"  Disagreement: {result['avg_disagreement']:.3f}")
+
+        # Hard reset between methods so 36 GB of leftovers from the previous
+        # iteration cannot OOM the next prefill on tight 40 GB cards.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
     
     # Save results
     output_dir = Path(args.output_dir)
