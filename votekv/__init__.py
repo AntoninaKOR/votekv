@@ -14,6 +14,7 @@ from .gqa_utils import (
 )
 from .scoring import (
     compute_snapkv_scores_from_attentions,
+    compute_snapkv_scores_via_hooks,
     get_always_keep_indices,
 )
 from .selectors import (
@@ -50,6 +51,7 @@ __all__ = [
     "query_head_to_kv_head",
     "group_scores_by_gqa",
     "compute_snapkv_scores_from_attentions",
+    "compute_snapkv_scores_via_hooks",
     "get_always_keep_indices",
     "select_tokens",
     "select_full_cache",

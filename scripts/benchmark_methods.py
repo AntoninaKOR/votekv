@@ -15,7 +15,7 @@ import time
 from votekv.config import VoteKVConfig
 from votekv.model_utils import load_model_and_tokenizer
 from votekv.gqa_utils import get_gqa_info
-from votekv.scoring import compute_snapkv_scores_from_attentions
+from votekv.scoring import compute_snapkv_scores_via_hooks
 from votekv.selectors import select_tokens
 from votekv.cache_compression import convert_kv_head_mask_to_layer_indices, compress_past_key_values_layer_shared
 from votekv.generation import generate_with_compressed_cache
@@ -59,15 +59,25 @@ def benchmark_method(
     reset_memory_stats(device)
     start_time = time.perf_counter()
     
-    # Prefill
-    outputs = model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        use_cache=True,
-        output_attentions=(method != "full_cache"),
-        return_dict=True,
-    )
-    
+    # Prefill — use hook-based scoring to avoid materialising all-layer attentions.
+    if method == "full_cache":
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+            output_attentions=False,
+            return_dict=True,
+        )
+        scores = None
+    else:
+        outputs, scores = compute_snapkv_scores_via_hooks(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            observation_window=config.observation_window,
+            use_cache=True,
+        )
+
     past_key_values = outputs.past_key_values
     logits = outputs.logits
     prefill_time = time.perf_counter() - start_time
@@ -77,14 +87,10 @@ def benchmark_method(
         compressed_cache = past_key_values
         retained_count = prompt_len
         compression_time = 0.0
-        scores = None
         mask = None
     else:
         compression_start = time.perf_counter()
-        
-        attentions = outputs.attentions
-        scores = compute_snapkv_scores_from_attentions(attentions, config.observation_window)
-        
+
         mask = select_tokens(scores, method, config, gqa_info)
         
         budget = config.resolve_budget(prompt_len)
@@ -94,8 +100,7 @@ def benchmark_method(
         
         retained_count = selected_indices[0].shape[0]
         compression_time = time.perf_counter() - compression_start
-        
-        del attentions
+
         torch.cuda.empty_cache()
     
     # Generation

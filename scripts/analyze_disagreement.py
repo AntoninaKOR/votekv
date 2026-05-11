@@ -13,7 +13,7 @@ from pathlib import Path
 from votekv.config import VoteKVConfig
 from votekv.model_utils import load_model_and_tokenizer
 from votekv.gqa_utils import get_gqa_info
-from votekv.scoring import compute_snapkv_scores_from_attentions
+from votekv.scoring import compute_snapkv_scores_via_hooks
 from votekv.selectors import select_tokens
 from votekv.metrics import compute_gqa_disagreement, compute_vote_histogram
 from votekv.logging_utils import setup_logging
@@ -48,19 +48,15 @@ def analyze_disagreement(
     prompt_len = input_ids.shape[1]
     logger.info(f"Prompt length: {prompt_len} tokens")
     
-    # Get attention
-    outputs = model(
+    # Compute scores via hook-based scoring (one layer of attentions live at a time).
+    _, scores = compute_snapkv_scores_via_hooks(
+        model=model,
         input_ids=input_ids,
         attention_mask=attention_mask,
+        observation_window=config.observation_window,
         use_cache=True,
-        output_attentions=True,
-        return_dict=True,
     )
-    
-    # Compute scores
-    attentions = outputs.attentions
-    scores = compute_snapkv_scores_from_attentions(attentions, config.observation_window)
-    
+
     # Get GQA info
     gqa_info = get_gqa_info(model)
     
